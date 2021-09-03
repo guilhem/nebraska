@@ -121,11 +121,7 @@ func (u *Updater) CheckForUpdates(ctx context.Context) (*UpdateInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-	appResp := resp.GetApp(u.appID)
-	info := &UpdateInfo{
-		HasUpdate: appResp != nil && appResp.Status == omaha.AppOK && appResp.UpdateCheck.Status == "ok",
-		omahaResp: resp,
-	}
+	info := NewUpdateInfo(resp, u.appID)
 
 	return info, nil
 }
