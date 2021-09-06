@@ -2,9 +2,11 @@ package updater
 
 import (
 	"context"
+	"encoding/xml"
 	"errors"
 	"fmt"
 	"net/url"
+	"sync"
 
 	"github.com/google/uuid"
 	"github.com/kinvolk/go-omaha/omaha"
@@ -70,28 +72,42 @@ type Updater struct {
 	appID   string
 	channel string
 
+	debug           bool
 	omahaReqHandler OmahaRequestHandler
+
+	mu sync.RWMutex
 }
 
-func New(omahaURL string, appID string, channel string, instanceID string, instanceVersion string) (*Updater, error) {
-	return NewWithOmahaRequestHandler(omahaURL, appID, channel, instanceID, instanceVersion, NewDefaultOmahaRequestHandler(omahaURL))
+type Config struct {
+	OmahaURL        string
+	AppID           string
+	Channel         string
+	InstanceID      string
+	InstanceVersion string
+	Debug           bool
+	OmahaReqHandler OmahaRequestHandler
 }
 
-func NewWithOmahaRequestHandler(omahaURL string, appID string, channel string, instanceID string, instanceVersion string, handler OmahaRequestHandler) (*Updater, error) {
-	_, err := url.Parse(omahaURL)
-	if err != nil {
-		return nil, err
+func New(config Config) (*Updater, error) {
+	if _, err := url.Parse(config.OmahaURL); err != nil {
+		return nil, fmt.Errorf("parsing URL %q: %w", config.OmahaURL, err)
 	}
-	return &Updater{
-		omahaURL:        omahaURL,
+	updater := Updater{
+		omahaURL:        config.OmahaURL,
 		clientVersion:   defaultClientVersion,
-		instanceID:      instanceID,
+		instanceID:      config.InstanceID,
 		sessionID:       uuid.New().String(),
-		appID:           appID,
-		instanceVersion: instanceVersion,
-		channel:         channel,
-		omahaReqHandler: handler,
-	}, nil
+		appID:           config.AppID,
+		instanceVersion: config.InstanceVersion,
+		channel:         config.Channel,
+		debug:           config.Debug,
+	}
+	if config.OmahaReqHandler == nil {
+		updater.omahaReqHandler = NewDefaultOmahaRequestHandler(config.OmahaURL)
+	} else {
+		updater.omahaReqHandler = config.OmahaReqHandler
+	}
+	return &updater, nil
 }
 
 func NewAppRequest(u *Updater) *omaha.Request {
@@ -100,7 +116,7 @@ func NewAppRequest(u *Updater) *omaha.Request {
 	req.UserID = u.instanceID
 	req.SessionID = u.sessionID
 
-	app := req.AddApp(u.appID, u.instanceVersion)
+	app := req.AddApp(u.appID, u.GetInstanceVersion())
 	app.MachineID = u.instanceID
 	app.BootID = u.sessionID
 	app.Track = u.channel
@@ -109,7 +125,20 @@ func NewAppRequest(u *Updater) *omaha.Request {
 }
 
 func (u *Updater) SendOmahaRequest(req *omaha.Request) (*omaha.Response, error) {
-	return u.omahaReqHandler.Handle(req)
+	if u.debug {
+		requestByte, err := xml.Marshal(req)
+		if err == nil {
+			fmt.Println("Raw Request:\n", string(requestByte))
+		}
+	}
+	resp, err := u.omahaReqHandler.Handle(req)
+	if u.debug {
+		responseByte, err := xml.Marshal(resp)
+		if err == nil {
+			fmt.Println("Raw Response:\n", string(responseByte))
+		}
+	}
+	return resp, err
 }
 
 func (u *Updater) CheckForUpdates(ctx context.Context) (*UpdateInfo, error) {
@@ -129,7 +158,7 @@ func (u *Updater) CheckForUpdates(ctx context.Context) (*UpdateInfo, error) {
 func (u *Updater) ReportProgress(ctx context.Context, progress Progress) error {
 	val, ok := progressEventMap[progress]
 	if !ok {
-		return errors.New("Invalid Progress value")
+		return errors.New("invalid Progress value")
 	}
 	resp, err := u.SendOmahaEvent(ctx, val)
 	if err != nil {
@@ -138,14 +167,13 @@ func (u *Updater) ReportProgress(ctx context.Context, progress Progress) error {
 
 	app := resp.GetApp(u.appID)
 	if app.Status != "ok" {
-		return errors.New(fmt.Sprintf("Error when reporting progress to omaha server, got not ok response"))
+		return fmt.Errorf("reporting progress to omaha server, got response %q", app.Status)
 	}
 
 	return nil
 }
 
 func (u *Updater) SendOmahaEvent(ctx context.Context, event *omaha.EventRequest) (*omaha.Response, error) {
-
 	req := NewAppRequest(u)
 	app := req.GetApp(u.appID)
 	app.Events = append(app.Events, event)
@@ -154,30 +182,32 @@ func (u *Updater) SendOmahaEvent(ctx context.Context, event *omaha.EventRequest)
 }
 
 func (u *Updater) GetInstanceVersion() string {
+	u.mu.RLock()
+	defer u.mu.RUnlock()
 	return u.instanceVersion
 }
 
 func (u *Updater) SetInstanceVersion(version string) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
 	u.instanceVersion = version
 }
 
 func (u *Updater) TryUpdate(ctx context.Context, handler UpdateHandler) error {
-	fmt.Println("Version before run:", u.instanceVersion)
 
-	// Check for updates
 	info, err := u.CheckForUpdates(ctx)
 	if err != nil {
 		return err
 	}
 
 	if !info.HasUpdate {
-		return fmt.Errorf("No update available for app %v, channel %v: %v", u.appID, u.channel, info.GetUpdateStatus())
+		return fmt.Errorf("no update available for app %v, channel %v: %v", u.appID, u.channel, info.GetUpdateStatus())
 	}
 
-	// Fetch update
-	err = handler.FetchUpdate(ctx, info)
-	if err != nil {
-		_ = u.ReportProgress(ctx, ProgressError)
+	if err := handler.FetchUpdate(ctx, info); err != nil {
+		if progressErr := u.ReportProgress(ctx, ProgressError); progressErr != nil {
+			fmt.Println("error reporting ProgressError to omaha server:", progressErr)
+		}
 		return err
 	}
 
@@ -186,23 +216,21 @@ func (u *Updater) TryUpdate(ctx context.Context, handler UpdateHandler) error {
 		return err
 	}
 
-	err = handler.ApplyUpdate(ctx, info)
-	if err != nil {
-		_ = u.ReportProgress(ctx, ProgressError)
+	if err := handler.ApplyUpdate(ctx, info); err != nil {
+		if progressErr := u.ReportProgress(ctx, ProgressError); progressErr != nil {
+			fmt.Println("error reporting ProgressError to omaha server:", progressErr)
+		}
 		return err
 	}
 
-	err = u.ReportProgress(ctx, ProgressInstallationFinished)
-	if err != nil {
+	if err := u.ReportProgress(ctx, ProgressInstallationFinished); err != nil {
 		return err
 	}
 
 	version := info.GetVersion()
-	u.instanceVersion = version
-	fmt.Println("Version after run:", u.instanceVersion)
+	u.SetInstanceVersion(version)
 
-	err = u.ReportProgress(ctx, ProgressUpdateComplete)
-	if err != nil {
+	if err := u.ReportProgress(ctx, ProgressUpdateComplete); err != nil {
 		return err
 	}
 
