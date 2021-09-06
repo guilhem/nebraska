@@ -22,7 +22,7 @@ const (
 	ProgressInstallationStarted
 	ProgressInstallationFinished
 	ProgressUpdateComplete
-	ProgressUpdateCompleteAndRebooted
+	ProgressUpdateCompleteAndRestarted
 	ProgressError
 )
 
@@ -39,7 +39,7 @@ var progressEventMap = map[Progress]*omaha.EventRequest{
 		Type:   omaha.EventTypeUpdateComplete,
 		Result: omaha.EventResultSuccess,
 	},
-	ProgressUpdateCompleteAndRebooted: {
+	ProgressUpdateCompleteAndRestarted: {
 		Type:   omaha.EventTypeUpdateComplete,
 		Result: omaha.EventResultSuccessReboot,
 	},

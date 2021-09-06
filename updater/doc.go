@@ -42,10 +42,10 @@ each update's state. So the basic workflow for using this updater package is:
     version of the application and report that the update is now complete
 	(these are two different progress reports and may involve running).
 
-Note that if your update requires a reboot, then there's a specific progress
+Note that if your update requires a restart, then there's a specific progress
 report for that.
 The caller is also responsible for keeping any local state the update
-implementation needs (like e.g. knowing that a reboot has happened, or that the
+implementation needs (like e.g. knowing that a restart has happened, or that the
 version if now running).
 
 Initialization:
@@ -133,16 +133,16 @@ After we have the updater instance, we can try updating:
 
 
 If instead of rerunning the application in the example above, we'd perform a
-reboot, then upon running the logic again and detecting that we're running a
+restart, then upon running the logic again and detecting that we're running a
 new version, we could report that we did so:
 
-    u.ReportProgress(updater.ProgressUpdateCompleteAndRebooted)
+    u.ReportProgress(updater.ProgressUpdateCompleteAndRestarted)
 
 
 Performing updates, simplified:
 
 It may be that our update process is very straightforward (doesn't need a
-reboot not a lot of state checks in between) and that it can be well divided
+restart not a lot of state checks in between) and that it can be well divided
 in two parts: getting the update, applying the update.
 
 For this use-case, updater offers a simpler way to update that sends the

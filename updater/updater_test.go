@@ -22,17 +22,17 @@ const (
 	defaultTestDbURL string = "postgres://postgres:nebraska@127.0.0.1:5432/nebraska_tests?sslmode=disable&connect_timeout=10"
 )
 
-type TestOmahaHandler struct {
+type testOmahaHandler struct {
 	handler *omaha.Handler
 }
 
-func newTestHandler(a *api.API) *TestOmahaHandler {
-	return &TestOmahaHandler{
+func newTestHandler(a *api.API) *testOmahaHandler {
+	return &testOmahaHandler{
 		handler: omaha.NewHandler(a),
 	}
 }
 
-func (h *TestOmahaHandler) Handle(req *omahaSpec.Request) (*omahaSpec.Response, error) {
+func (h *testOmahaHandler) Handle(req *omahaSpec.Request) (*omahaSpec.Response, error) {
 	omahaReqXML, err := xml.Marshal(req)
 	if err != nil {
 		return nil, err
