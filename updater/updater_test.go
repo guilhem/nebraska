@@ -33,13 +33,15 @@ func newTestHandler(a *api.API) *testOmahaHandler {
 }
 
 func (h *testOmahaHandler) Handle(req *omahaSpec.Request) (*omahaSpec.Response, error) {
-	omahaReqXML, err := xml.Marshal(req)
+	requestBuf := bytes.NewBuffer(nil)
+	encoder := xml.NewEncoder(requestBuf)
+	err := encoder.Encode(req)
 	if err != nil {
 		return nil, err
 	}
 
 	omahaRespXML := new(bytes.Buffer)
-	if err = h.handler.Handle(bytes.NewReader(omahaReqXML), omahaRespXML, "0.1.0.0"); err != nil {
+	if err = h.handler.Handle(requestBuf, omahaRespXML, "0.1.0.0"); err != nil {
 		return nil, err
 	}
 

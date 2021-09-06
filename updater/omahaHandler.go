@@ -33,12 +33,15 @@ func NewHttpOmahaRequestHandler(url string, client *retryablehttp.Client) OmahaR
 // Handle uses the httpClient to process the omaha request and returns omaha response
 // and error.
 func (h *httpOmahaReqHandler) Handle(req *omaha.Request) (*omaha.Response, error) {
-	requestByte, err := xml.Marshal(req)
+
+	requestBuf := bytes.NewBuffer(nil)
+	encoder := xml.NewEncoder(requestBuf)
+	err := encoder.Encode(req)
 	if err != nil {
 		return nil, fmt.Errorf("encoding request as XML: %w", err)
 	}
 
-	resp, err := h.httpClient.Post(h.url, "text/xml", bytes.NewReader(requestByte))
+	resp, err := h.httpClient.Post(h.url, "text/xml", requestBuf)
 	if err != nil {
 		return nil, fmt.Errorf("http post request: %w", err)
 	}
