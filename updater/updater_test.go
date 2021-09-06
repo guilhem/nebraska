@@ -83,17 +83,12 @@ func TestCheckForUpdates(t *testing.T) {
 	a := newForTest(t)
 	defer a.Close()
 
-	tTeam, _ := a.AddTeam(&api.Team{Name: "test_team"})
-	tApp, _ := a.AddApp(&api.Application{Name: "io.phony.App", TeamID: tTeam.ID})
-	tPkg, _ := a.AddPackage(&api.Package{Type: api.PkgTypeOther, URL: "http://sample.url/pkg", Version: "0.1.0", ApplicationID: tApp.ID, Arch: api.ArchAMD64})
-	tChannel, _ := a.AddChannel(&api.Channel{Name: "channel1", Color: "blue", ApplicationID: tApp.ID, PackageID: null.StringFrom(tPkg.ID), Arch: api.ArchAMD64})
-	tGroup, err := a.AddGroup(&api.Group{Name: "group1", ApplicationID: tApp.ID, ChannelID: null.StringFrom(tChannel.ID), PolicyUpdatesEnabled: true, PolicySafeMode: true, PolicyPeriodInterval: "15 minutes", PolicyMaxUpdatesPerPeriod: 2, PolicyUpdateTimeout: "60 minutes", Track: "stable"})
-	assert.NoError(t, err)
+	appID, track, tChannel := setup(t, a, "0.1.0", true, 2)
 
 	u, err := updater.New(updater.Config{
 		OmahaURL:        "http://localhost:8000",
-		AppID:           tApp.ID,
-		Channel:         tGroup.Track,
+		AppID:           appID,
+		Channel:         track,
 		InstanceID:      "instance001",
 		InstanceVersion: "0.2.0",
 		OmahaReqHandler: newTestHandler(a),
@@ -105,7 +100,7 @@ func TestCheckForUpdates(t *testing.T) {
 	assert.False(t, info.HasUpdate)
 	assert.Equal(t, "", info.GetVersion())
 
-	newPkg, _ := a.AddPackage(&api.Package{Type: api.PkgTypeOther, URL: "http://sample.url/pkg", Version: "0.3.0", ApplicationID: tApp.ID, Arch: api.ArchAMD64, Filename: null.StringFrom("updatefile.txt")})
+	newPkg, _ := a.AddPackage(&api.Package{Type: api.PkgTypeOther, URL: "http://sample.url/pkg", Version: "0.3.0", ApplicationID: appID, Arch: api.ArchAMD64, Filename: null.StringFrom("updatefile.txt")})
 	tChannel.PackageID = null.StringFrom(newPkg.ID)
 	err = a.UpdateChannel(tChannel)
 	assert.NoError(t, err)
@@ -141,51 +136,84 @@ func (u updateTestHandler) ApplyUpdate(ctx context.Context, info *updater.Update
 	return u.applyUpdateResult
 }
 
+func setup(t *testing.T, a *api.API, version string, policySafeMode bool, policyMaxUpdatesPerPeriod int) (string, string, *api.Channel) {
+	t.Helper()
+	tTeam, err := a.AddTeam(&api.Team{Name: "test_team"})
+	require.NoError(t, err)
+	tApp, err := a.AddApp(&api.Application{Name: "io.phony.App", TeamID: tTeam.ID})
+	require.NoError(t, err)
+	tPkg, err := a.AddPackage(&api.Package{Type: api.PkgTypeOther, URL: "http://sample.url/pkg", Version: version, ApplicationID: tApp.ID, Arch: api.ArchAMD64})
+	require.NoError(t, err)
+	tChannel, err := a.AddChannel(&api.Channel{Name: "channel1", Color: "blue", ApplicationID: tApp.ID, PackageID: null.StringFrom(tPkg.ID), Arch: api.ArchAMD64})
+	require.NoError(t, err)
+	tGroup, err := a.AddGroup(&api.Group{Name: "group1", ApplicationID: tApp.ID, ChannelID: null.StringFrom(tChannel.ID), PolicyUpdatesEnabled: true, PolicySafeMode: policySafeMode, PolicyPeriodInterval: "15 minutes", PolicyMaxUpdatesPerPeriod: policyMaxUpdatesPerPeriod, PolicyUpdateTimeout: "60 minutes", Track: "stable"})
+	require.NoError(t, err)
+	return tApp.ID, tGroup.Track, tChannel
+}
+
 func TestTryUpdate(t *testing.T) {
 	a := newForTest(t)
 	defer a.Close()
 
-	tTeam, _ := a.AddTeam(&api.Team{Name: "test_team"})
-	tApp, _ := a.AddApp(&api.Application{Name: "io.phony.App", TeamID: tTeam.ID})
-	tPkg, _ := a.AddPackage(&api.Package{Type: api.PkgTypeOther, URL: "http://sample.url/pkg", Version: "0.4.0", ApplicationID: tApp.ID, Arch: api.ArchAMD64})
-	tChannel, _ := a.AddChannel(&api.Channel{Name: "channel1", Color: "blue", ApplicationID: tApp.ID, PackageID: null.StringFrom(tPkg.ID), Arch: api.ArchAMD64})
-	tGroup, err := a.AddGroup(&api.Group{Name: "group1", ApplicationID: tApp.ID, ChannelID: null.StringFrom(tChannel.ID), PolicyUpdatesEnabled: true, PolicySafeMode: false, PolicyPeriodInterval: "15 minutes", PolicyMaxUpdatesPerPeriod: 10, PolicyUpdateTimeout: "60 minutes", Track: "stable"})
-	assert.NoError(t, err)
-
 	oldVersion := "0.2.0"
+	pkgVersion := "0.4.0"
+	appID, track, _ := setup(t, a, pkgVersion, false, 10)
 
-	u, err := updater.New(updater.Config{
-		OmahaURL:        "http://localhost:8000",
-		AppID:           tApp.ID,
-		Channel:         tGroup.Track,
-		InstanceID:      "instance001",
-		InstanceVersion: "0.2.0",
-		OmahaReqHandler: newTestHandler(a),
-	})
-	require.NoError(t, err)
+	type test struct {
+		name              string
+		fetchUpdateResult error
+		applyUpdateResult error
+		isErr             bool
+	}
 
-	assert.Equal(t, oldVersion, u.GetInstanceVersion())
+	tests := []test{
+		{
+			name:              "error fetching update",
+			fetchUpdateResult: errors.New("something went wrong fetching the update"),
+			applyUpdateResult: nil,
+			isErr:             true,
+		},
+		{
+			name:              "error applying update",
+			fetchUpdateResult: nil,
+			applyUpdateResult: errors.New("something went wrong fetching the update"),
+			isErr:             true,
+		}, {
+			name:              "success try update",
+			fetchUpdateResult: nil,
+			applyUpdateResult: nil,
+			isErr:             false,
+		},
+	}
 
-	// Error when fetching update
-	err = u.TryUpdate(context.TODO(), &updateTestHandler{
-		errors.New("something went wrong fetching the update"),
-		nil,
-	})
-	assert.Error(t, err)
-	assert.Equal(t, oldVersion, u.GetInstanceVersion())
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
 
-	// Error when applying update
-	err = u.TryUpdate(context.TODO(), &updateTestHandler{
-		nil,
-		errors.New("something went wrong applying the update"),
-	})
-	assert.Error(t, err)
-	assert.Equal(t, oldVersion, u.GetInstanceVersion())
+			u, err := updater.New(updater.Config{
+				OmahaURL:        "http://localhost:8000",
+				AppID:           appID,
+				Channel:         track,
+				InstanceID:      "instance001",
+				InstanceVersion: "0.2.0",
+				OmahaReqHandler: newTestHandler(a),
+				Debug:           true,
+			})
+			require.NoError(t, err)
 
-	err = u.TryUpdate(context.TODO(), updateTestHandler{
-		nil,
-		nil,
-	})
-	assert.NoError(t, err)
-	assert.Equal(t, tPkg.Version, u.GetInstanceVersion())
+			assert.Equal(t, oldVersion, u.GetInstanceVersion())
+
+			err = u.TryUpdate(context.TODO(), &updateTestHandler{
+				fetchUpdateResult: tc.fetchUpdateResult,
+				applyUpdateResult: tc.applyUpdateResult,
+			})
+			if tc.isErr {
+				assert.Error(t, err)
+				assert.Equal(t, oldVersion, u.GetInstanceVersion())
+			} else {
+				assert.NoError(t, err)
+				assert.Equal(t, pkgVersion, u.GetInstanceVersion())
+			}
+		})
+	}
 }
