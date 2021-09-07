@@ -69,7 +69,18 @@ the updates in order for it to be used:
 		return os.Getenv("MACHINE_VERSION")
 	}
 
-	u := updater.New("http://myupdateserver.io/v1/update", "io.phony.App", "stable", getInstanceID(), getCurrentVersion())
+	conf := updater.Config{
+		OmahaURL:        "http://myupdateserver.io/v1/update",
+		AppID:           "io.phony.App",
+		Channel:         "stable",
+		InstanceID:      getInstanceID(),
+		InstanceVersion: getCurrentVersion(),
+	}
+	u, err := updater.New(conf)
+	if err != nil{
+		fmt.Printf("error setting up updater.. %v\n", err)
+		os.Exit(1)
+	}
 
 
 Performing updates manually:
@@ -92,51 +103,51 @@ After we have the updater instance, we can try updating:
 	newVersion := info.GetVersion()
 
 	// So we got an update, let's report we'll start downloading it
-	u.ReportProgress(updater.ProgressDownloadStarted)
+	u.ReportProgress(ctx, updater.ProgressDownloadStarted)
 
 	// This should be your own implementation
 	download, err := someFunctionThatDownloadsAFile(info.GetURL())
 	if err != nil {
 		// Oops something went wrong
-		u.ReportProgress(updater.ProgressError)
+		u.ReportProgress(ctx, updater.ProgressError)
 		return
 	}
 
 	// The download was successful, let's inform of that
-	u.ReportProgress(updater.ProgressDownloadFinished)
+	u.ReportProgress(ctx, updater.ProgressDownloadFinished)
 
 	// We got our update file, let's install it!
-	u.ReportProgress(updater.ProgressInstallationStarted)
+	u.ReportProgress(ctx, updater.ProgressInstallationStarted)
 
 	// This should be your own implementation
 	err := someFunctionThatExtractsTheUpdateAndInstallIt(download)
 	if err != nil {
 		// Oops something went wrong
-		u.ReportProgress(updater.ProgressError)
+		u.ReportProgress(ctx, updater.ProgressError)
 		return
 	}
 
 	// We've just applied the update
-	u.ReportProgress(updater.ProgressInstallationFinished)
+	u.ReportProgress(ctx, updater.ProgressInstallationFinished)
 
 	err := someFunctionThatExitsAndRerunsTheApp()
 	if err != nil {
 		// Oops something went wrong
-		u.ReportProgress(updater.ProgressError)
+		u.ReportProgress(ctx, updater.ProgressError)
 		return
 	}
 
-	u.SetVersion(newVersion)
+	u.SetInstanceVersion(newVersion)
 
 	// We're running the new version! Hurray!
-	u.ReportProgress(updater.ProgressUpdateComplete)
+	u.ReportProgress(ctx, updater.ProgressUpdateComplete)
 
 
 If instead of rerunning the application in the example above, we'd perform a
 restart, then upon running the logic again and detecting that we're running a
 new version, we could report that we did so:
 
-    u.ReportProgress(updater.ProgressUpdateCompleteAndRestarted)
+    u.ReportProgress(ctx, updater.ProgressUpdateCompleteAndRestarted)
 
 
 Performing updates, simplified:
