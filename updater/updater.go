@@ -26,35 +26,46 @@ const (
 	ProgressError
 )
 
-var progressEventMap = map[Progress]*omaha.EventRequest{
-	ProgressDownloadStarted: {
-		Type:   omaha.EventTypeUpdateDownloadStarted,
-		Result: omaha.EventResultSuccess,
-	},
-	ProgressDownloadFinished: {
-		Type:   omaha.EventTypeUpdateDownloadFinished,
-		Result: omaha.EventResultSuccess,
-	},
-	ProgressUpdateComplete: {
-		Type:   omaha.EventTypeUpdateComplete,
-		Result: omaha.EventResultSuccess,
-	},
-	ProgressUpdateCompleteAndRestarted: {
-		Type:   omaha.EventTypeUpdateComplete,
-		Result: omaha.EventResultSuccessReboot,
-	},
-	ProgressInstallationStarted: {
-		Type:   omaha.EventTypeInstallStarted,
-		Result: omaha.EventResultSuccess,
-	},
-	ProgressInstallationFinished: {
-		Type:   omaha.EventTypeInstallStarted,
-		Result: omaha.EventResultSuccess,
-	},
-	ProgressError: {
-		Type:   omaha.EventTypeUpdateComplete,
-		Result: omaha.EventResultError,
-	},
+func progressToEventRequest(p Progress) *omaha.EventRequest {
+	switch p {
+	case ProgressDownloadStarted:
+		return &omaha.EventRequest{
+			Type:   omaha.EventTypeUpdateDownloadStarted,
+			Result: omaha.EventResultSuccess,
+		}
+	case ProgressDownloadFinished:
+		return &omaha.EventRequest{
+			Type:   omaha.EventTypeUpdateDownloadFinished,
+			Result: omaha.EventResultSuccess,
+		}
+	case ProgressUpdateComplete:
+		return &omaha.EventRequest{
+			Type:   omaha.EventTypeUpdateComplete,
+			Result: omaha.EventResultSuccess,
+		}
+	case ProgressUpdateCompleteAndRestarted:
+		return &omaha.EventRequest{
+			Type:   omaha.EventTypeUpdateComplete,
+			Result: omaha.EventResultSuccessReboot,
+		}
+	case ProgressInstallationStarted:
+		return &omaha.EventRequest{
+			Type:   omaha.EventTypeInstallStarted,
+			Result: omaha.EventResultSuccess,
+		}
+	case ProgressInstallationFinished:
+		return &omaha.EventRequest{
+			Type:   omaha.EventTypeInstallStarted,
+			Result: omaha.EventResultSuccess,
+		}
+	case ProgressError:
+		return &omaha.EventRequest{
+			Type:   omaha.EventTypeUpdateComplete,
+			Result: omaha.EventResultError,
+		}
+	default:
+		return nil
+	}
 }
 
 type OmahaRequestHandler interface {
@@ -156,11 +167,11 @@ func (u *Updater) CheckForUpdates(ctx context.Context) (*UpdateInfo, error) {
 }
 
 func (u *Updater) ReportProgress(ctx context.Context, progress Progress) error {
-	val, ok := progressEventMap[progress]
-	if !ok {
+	eventRequest := progressToEventRequest(progress)
+	if eventRequest == nil {
 		return errors.New("invalid Progress value")
 	}
-	resp, err := u.SendOmahaEvent(ctx, val)
+	resp, err := u.SendOmahaEvent(ctx, eventRequest)
 	if err != nil {
 		return err
 	}
