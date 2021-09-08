@@ -30,7 +30,7 @@ each update's state. So the basic workflow for using this updater package is:
   1. Check for an update, if there's one available then:
   2. Inform the server we're started it (this is done by sending a progress
 	 report of "download started").
-  3. Actually perform the download or whatever represents getting fetching the
+  3. Actually perform the download or whatever represents fetching the
      update's parts.
   4. Inform the server that the download is finished it and that we're applying
      the update (this is done by sending a progress report of "installation
