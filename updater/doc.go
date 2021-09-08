@@ -102,7 +102,7 @@ After we have the updater instance, we can try updating:
 
 	newVersion := info.GetVersion()
 
-	// So we got an update, let's report we'll start downloading it
+	// So we got an update, let's report we'll start downloading it.
 	u.ReportProgress(ctx, updater.ProgressDownloadStarted)
 
 	// This should be your own implementation
