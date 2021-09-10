@@ -14,10 +14,10 @@ import (
 
 const defaultClientVersion = "go-omaha"
 
-type Progress int
+type progress int
 
 const (
-	ProgressDownloadStarted Progress = iota
+	ProgressDownloadStarted progress = iota
 	ProgressDownloadFinished
 	ProgressInstallationStarted
 	ProgressInstallationFinished
@@ -26,7 +26,7 @@ const (
 	ProgressError
 )
 
-func progressToEventRequest(p Progress) *omaha.EventRequest {
+func progressToEventRequest(p progress) *omaha.EventRequest {
 	switch p {
 	case ProgressDownloadStarted:
 		return &omaha.EventRequest{
@@ -68,11 +68,37 @@ func progressToEventRequest(p Progress) *omaha.EventRequest {
 	}
 }
 
+// OmahaRequestHandler wraps the Handle function which
+// takes in context, url, omaha.Request and
+// returns omaha.Response.
 type OmahaRequestHandler interface {
-	Handle(req *omaha.Request) (*omaha.Response, error)
+	Handle(ctx context.Context, url string, req *omaha.Request) (*omaha.Response, error)
 }
 
-type Updater struct {
+// Updater interface wraps functions required to update an application
+// CheckForUpdates checks if there are new updates version from
+// omaha server, ReportProgress reports progress of update
+// to the omaha server, ReportError reports errors with custom
+// error code, SendOmahaEvent,SendOmahaRequest sends omaha event request
+// and omaha request to omaha server respectively and TryUpdate function
+// takes an implementation of UpdateHandler and runs the complete flow
+// from checking updates to reporting successful installation. The
+// InstanceVersion and SetInstanceVersion functions are used to fetch
+// and set the current instance version of the updater.
+type Updater interface {
+	SendOmahaRequest(ctx context.Context, req *omaha.Request) (*omaha.Response, error)
+	SendOmahaEvent(ctx context.Context, event *omaha.EventRequest) (*omaha.Response, error)
+	CheckForUpdates(ctx context.Context) (UpdateInfo, error)
+	ReportProgress(ctx context.Context, progress progress) error
+	ReportError(ctx context.Context, errorCode *int) error
+	CompleteUpdate(ctx context.Context, info UpdateInfo) error
+	TryUpdate(ctx context.Context, handler UpdateHandler) error
+	InstanceVersion() string
+	SetInstanceVersion(version string)
+}
+
+// updater implements the Updater interface.
+type updater struct {
 	omahaURL      string
 	clientVersion string
 
@@ -89,6 +115,7 @@ type Updater struct {
 	mu sync.RWMutex
 }
 
+// Config is used to configure new updater instance.
 type Config struct {
 	OmahaURL        string
 	AppID           string
@@ -99,11 +126,14 @@ type Config struct {
 	OmahaReqHandler OmahaRequestHandler
 }
 
-func New(config Config) (*Updater, error) {
+// New takes config and returns Updater and error,
+// returns an error if OmahaURL in the config is invalid.
+func New(config Config) (Updater, error) {
 	if _, err := url.Parse(config.OmahaURL); err != nil {
 		return nil, fmt.Errorf("parsing URL %q: %w", config.OmahaURL, err)
 	}
-	updater := Updater{
+
+	updater := updater{
 		omahaURL:        config.OmahaURL,
 		clientVersion:   defaultClientVersion,
 		instanceID:      config.InstanceID,
@@ -113,21 +143,23 @@ func New(config Config) (*Updater, error) {
 		channel:         config.Channel,
 		debug:           config.Debug,
 	}
+	updater.omahaReqHandler = config.OmahaReqHandler
 	if config.OmahaReqHandler == nil {
-		updater.omahaReqHandler = NewDefaultOmahaRequestHandler(config.OmahaURL)
-	} else {
-		updater.omahaReqHandler = config.OmahaReqHandler
+		updater.omahaReqHandler = NewOmahaRequestHandler(nil)
 	}
+
 	return &updater, nil
 }
 
-func NewAppRequest(u *Updater) *omaha.Request {
+// newAppRequest create an omaha request containing
+// the application configured in the updater.
+func (u *updater) newAppRequest() *omaha.Request {
 	req := omaha.NewRequest()
 	req.Version = u.clientVersion
 	req.UserID = u.instanceID
 	req.SessionID = u.sessionID
 
-	app := req.AddApp(u.appID, u.GetInstanceVersion())
+	app := req.AddApp(u.appID, u.InstanceVersion())
 	app.MachineID = u.instanceID
 	app.BootID = u.sessionID
 	app.Track = u.channel
@@ -135,14 +167,17 @@ func NewAppRequest(u *Updater) *omaha.Request {
 	return req
 }
 
-func (u *Updater) SendOmahaRequest(req *omaha.Request) (*omaha.Response, error) {
+// SendOmahaRequest uses the OmahaReqHandler of the updater to send
+// request to the omaha server. If updater is configured with debug
+// value as true the raw request and response is printed.
+func (u *updater) SendOmahaRequest(ctx context.Context, req *omaha.Request) (*omaha.Response, error) {
 	if u.debug {
 		requestByte, err := xml.Marshal(req)
 		if err == nil {
 			fmt.Println("Raw Request:\n", string(requestByte))
 		}
 	}
-	resp, err := u.omahaReqHandler.Handle(req)
+	resp, err := u.omahaReqHandler.Handle(ctx, u.omahaURL, req)
 	if u.debug {
 		responseByte, err := xml.Marshal(resp)
 		if err == nil {
@@ -152,98 +187,155 @@ func (u *Updater) SendOmahaRequest(req *omaha.Request) (*omaha.Response, error) 
 	return resp, err
 }
 
-func (u *Updater) CheckForUpdates(ctx context.Context) (*UpdateInfo, error) {
-	req := NewAppRequest(u)
+// CheckForUpdates sends a request checking if the application has any new updates
+// to the omaha server.
+func (u *updater) CheckForUpdates(ctx context.Context) (UpdateInfo, error) {
+	req := u.newAppRequest()
 	app := req.GetApp(u.appID)
 	app.AddUpdateCheck()
 
-	resp, err := u.SendOmahaRequest(req)
+	resp, err := u.SendOmahaRequest(ctx, req)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("sending update check omaha request:%w", err)
 	}
-	info := NewUpdateInfo(resp, u.appID)
 
-	return info, nil
+	return NewUpdateInfo(*resp, u.appID), nil
 }
 
-func (u *Updater) ReportProgress(ctx context.Context, progress Progress) error {
+// ReportProgress takes the progress value and converts it
+// to corresponding omaha event request to report current
+// progress of the application update to omaha server.
+func (u *updater) ReportProgress(ctx context.Context, progress progress) error {
 	eventRequest := progressToEventRequest(progress)
 	if eventRequest == nil {
 		return errors.New("invalid Progress value")
 	}
 	resp, err := u.SendOmahaEvent(ctx, eventRequest)
 	if err != nil {
-		return err
+		return fmt.Errorf("sending report progress omaha request: %w", err)
 	}
 
 	app := resp.GetApp(u.appID)
 	if app.Status != "ok" {
-		return fmt.Errorf("reporting progress to omaha server, got response %q", app.Status)
+		return fmt.Errorf("reporting progress to omaha server, got status %q", app.Status)
 	}
 
 	return nil
 }
 
-func (u *Updater) SendOmahaEvent(ctx context.Context, event *omaha.EventRequest) (*omaha.Response, error) {
-	req := NewAppRequest(u)
+// ReportError takes an optional errorCode and reports
+// that an error occured during the installation process,
+// the optional errorCode can be used to send custom
+// error codes to the server. This error code can then be
+// used to trace out errors custom to the application
+// installation process.
+func (u *updater) ReportError(ctx context.Context, errorCode *int) error {
+	errorEvent := progressToEventRequest(ProgressError)
+	if errorCode != nil {
+		errorEvent.ErrorCode = *errorCode
+	}
+
+	resp, err := u.SendOmahaEvent(ctx, errorEvent)
+	if err != nil {
+		return fmt.Errorf("sending progress error event to omaha server: %w", err)
+	}
+
+	app := resp.GetApp(u.appID)
+	if app.Status != "ok" {
+		return fmt.Errorf("reporting progress error to omaha server, got status %q", app.Status)
+	}
+
+	return nil
+}
+
+// CompleteUpdate sends an ProgressUpdateComplete event to the omaha server
+// and sets the version in the UpdateInfo as the current version of
+// the instance in the updater.
+func (u *updater) CompleteUpdate(ctx context.Context, info UpdateInfo) error {
+
+	if info == nil {
+		return errors.New("invalid UpdateInfo")
+	}
+
+	version := info.Version()
+	if version == "" {
+		return fmt.Errorf("invalid version, can't report complete event to omaha server")
+	}
+
+	err := u.ReportProgress(ctx, ProgressUpdateComplete)
+	if err != nil {
+		return fmt.Errorf("reporting ProgressUpdateComplete to omaha server: %w", err)
+	}
+
+	u.SetInstanceVersion(version)
+	return nil
+}
+
+// SendOmahaRequest sends the event request to the omaha server
+// and returns the omaha.Response returned by the omaha server.
+func (u *updater) SendOmahaEvent(ctx context.Context, event *omaha.EventRequest) (*omaha.Response, error) {
+	req := u.newAppRequest()
 	app := req.GetApp(u.appID)
 	app.Events = append(app.Events, event)
 
-	return u.SendOmahaRequest(req)
+	return u.SendOmahaRequest(ctx, req)
 }
 
-func (u *Updater) GetInstanceVersion() string {
+// InstanceVersion returns the current version of the application.
+func (u *updater) InstanceVersion() string {
 	u.mu.RLock()
 	defer u.mu.RUnlock()
 	return u.instanceVersion
 }
 
-func (u *Updater) SetInstanceVersion(version string) {
+// SetInstanceVersion sets the current instance version
+// of the application to the updater.
+func (u *updater) SetInstanceVersion(version string) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	u.instanceVersion = version
 }
 
-func (u *Updater) TryUpdate(ctx context.Context, handler UpdateHandler) error {
+// TryUpdate function takes in an UpdateHandler and performs
+// the complete flow from checking for updates to reporting
+// status etc and returns an error if anything fails in the flow.
+func (u *updater) TryUpdate(ctx context.Context, handler UpdateHandler) error {
+
+	if handler == nil {
+		return errors.New("invalid UpdateHandler")
+	}
 
 	info, err := u.CheckForUpdates(ctx)
 	if err != nil {
-		return err
+		return fmt.Errorf("checking for update: %w", err)
 	}
 
-	if !info.HasUpdate {
-		return fmt.Errorf("no update available for app %v, channel %v: %v", u.appID, u.channel, info.GetUpdateStatus())
+	if !info.HasUpdate() {
+		return fmt.Errorf("no update available for app %v, channel %v: %v", u.appID, u.channel, info.UpdateStatus())
 	}
 
 	if err := handler.FetchUpdate(ctx, info); err != nil {
-		if progressErr := u.ReportProgress(ctx, ProgressError); progressErr != nil {
-			fmt.Println("error reporting ProgressError to omaha server:", progressErr)
+		if reportErr := u.ReportError(ctx, nil); reportErr != nil && u.debug {
+			fmt.Println("reporting error to omaha server:", errors.Unwrap(reportErr))
 		}
 		return err
 	}
 
 	err = u.ReportProgress(ctx, ProgressDownloadFinished)
 	if err != nil {
-		return err
+		return fmt.Errorf("reporting progress download finished: %w", err)
 	}
 
 	if err := handler.ApplyUpdate(ctx, info); err != nil {
-		if progressErr := u.ReportProgress(ctx, ProgressError); progressErr != nil {
-			fmt.Println("error reporting ProgressError to omaha server:", progressErr)
+		if reportErr := u.ReportError(ctx, nil); reportErr != nil && u.debug {
+			fmt.Println("reporting error to omaha server:", errors.Unwrap(reportErr))
 		}
 		return err
 	}
 
 	if err := u.ReportProgress(ctx, ProgressInstallationFinished); err != nil {
-		return err
+		return fmt.Errorf("reporting progress install finished: %w", err)
 	}
 
-	version := info.GetVersion()
-	u.SetInstanceVersion(version)
-
-	if err := u.ReportProgress(ctx, ProgressUpdateComplete); err != nil {
-		return err
-	}
-
-	return nil
+	return u.CompleteUpdate(ctx, info)
 }

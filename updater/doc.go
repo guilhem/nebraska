@@ -27,7 +27,7 @@ Each update has four main parts involved:
 The way omaha managed updates work is that omaha responds to update checks, and
 relies on the information given by the application's instance to keep track of
 each update's state. So the basic workflow for using this updater package is:
-  1. Check for an update, if there's one available then:
+  1. Check for an update, if there's one available then. if there is not, try again later.
   2. Inform the server we're started it (this is done by sending a progress
 	 report of "download started").
   3. Actually perform the download or whatever represents fetching the
@@ -38,7 +38,7 @@ each update's state. So the basic workflow for using this updater package is:
   5. Apply the update (this deeply depends on what each application does, but
 	 may involve extracting files into locations, migrating configuration,
 	 etc.).
-  6.Inform the server that the update installation is finished; run the new
+  6. Inform the server that the update installation is finished; run the new
     version of the application and report that the update is now complete
 	(these are two different progress reports and may involve running).
 
@@ -50,11 +50,11 @@ version if now running).
 
 Initialization:
 
-An instance of the updater needs to be initialized with the needed details for
-the updates in order for it to be used:
+An instance of the updater needs to be initialized.
 
 	import (
-		"os"
+		"context"
+		"fmt"
 
 		"github.com/kinvolk/nebraska/updater"
 	)
@@ -64,89 +64,101 @@ the updates in order for it to be used:
 		return os.Getenv("MACHINE_NAME")
 	}
 
-	func getCurrentVersion() string {
+	func getAppVersion() string {
 		// Your own implementation here...
 		return os.Getenv("MACHINE_VERSION")
 	}
 
-	conf := updater.Config{
-		OmahaURL:        "http://myupdateserver.io/v1/update",
-		AppID:           "io.phony.App",
-		Channel:         "stable",
-		InstanceID:      getInstanceID(),
-		InstanceVersion: getCurrentVersion(),
-	}
-	u, err := updater.New(conf)
-	if err != nil{
-		fmt.Printf("error setting up updater.. %v\n", err)
-		os.Exit(1)
-	}
+	func main(){
+		conf := updater.Config{
+			OmahaURL:        "http://test.omahaserver.com/v1/update/",
+			AppID:           "application_id",
+			Channel:         "stable",
+			InstanceID:      getInstanceID(),
+			InstanceVersion: getAppVersion(),
+		}
 
+		appUpdater, err := updater.New(conf)
+		if err != nil {
+			fmt.Println("error setting up updater",err)
+			os.Exit(1)
+		}
 
 Performing updates manually:
 
 After we have the updater instance, we can try updating:
 
-	ctx := context.TODO()
+		ctx := context.TODO()
 
-	info, err := u.CheckForUpdates(ctx)
-	if err != nil {
-		fmt.Printf("oops, something didn't go well... %v\n", err)
-		return
+		updateInfo, err := appUpdater.CheckForUpdates(ctx)
+		if err != nil {
+			fmt.Printf("oops, something didn't go well... %v\n", err)
+			return
+		}
+
+		if !updateInfo.HasUpdate() {
+			fmt.Printf("no updates, try next time...")
+			return
+		}
+
+		// So we got an update, let's report we'll start downloading it.
+		if err := appUpdater.ReportProgress(ctx, updater.ProgressDownloadStarted); err != nil {
+			if progressErr := appUpdater.ReportError(ctx, nil); progressErr != nil {
+				fmt.Println("reporting progress error:", progressErr)
+			}
+			fmt.Println("error reporting progress download started:",err)
+			return
+		}
+
+		// This should be implemented by the user.
+		// download, err := someFunctionThatDownloadsAFile(ctx, info.GetURL())
+		// if err != nil {
+		// 	// Oops something went wrong
+		// 	if progressErr := appUpdater.ReportError(ctx, nil); progressErr != nil {
+		// 		fmt.Println("reporting error:", progressErr)
+		// 	}
+		// 	return err
+		// }
+
+		// The download was successful, let's inform that to the omaha server
+		if err := appUpdater.ReportProgress(ctx, updater.ProgressDownloadFinished); err != nil {
+			if progressErr := appUpdater.ReportError(ctx, nil); progressErr != nil {
+				fmt.Println("reporting progress error:", progressErr)
+			}
+		return err
+		}
+
+		// let's install the update!
+		if err := appUpdater.ReportProgress(ctx, updater.ProgressInstallationStarted); err != nil {
+			if progressErr := appUpdater.ReportError(ctx, nil); progressErr != nil {
+				fmt.Println("reporting progress error:", progressErr)
+			}
+			return err
+		}
+
+		// This should be users own implementation
+		// err := someFunctionThatExtractsTheUpdateAndInstallIt(ctx, download)
+		// if err != nil {
+		// 	// Oops something went wrong
+		// 	if progressErr := appUpdater.ReportError(ctx, nil); progressErr != nil {
+		// 		fmt.Println("reporting error:", progressErr)
+		// 	}
+		// 	return err
+		// }
+
+		if err := appUpdater.CompleteUpdate(ctx, updateInfo); err != nil {
+			if progressErr := appUpdater.ReportError(ctx, nil); progressErr != nil {
+				fmt.Println("reporting progress error:", progressErr)
+			}
+			return err
+		}
+
+		return nil
 	}
-
-	if !info.HasUpdate {
-		fmt.Printf("no updates, try next time...")
-		return
-	}
-
-	newVersion := info.GetVersion()
-
-	// So we got an update, let's report we'll start downloading it.
-	u.ReportProgress(ctx, updater.ProgressDownloadStarted)
-
-	// This should be your own implementation
-	download, err := someFunctionThatDownloadsAFile(info.GetURL())
-	if err != nil {
-		// Oops something went wrong
-		u.ReportProgress(ctx, updater.ProgressError)
-		return
-	}
-
-	// The download was successful, let's inform of that
-	u.ReportProgress(ctx, updater.ProgressDownloadFinished)
-
-	// We got our update file, let's install it!
-	u.ReportProgress(ctx, updater.ProgressInstallationStarted)
-
-	// This should be your own implementation
-	err := someFunctionThatExtractsTheUpdateAndInstallIt(download)
-	if err != nil {
-		// Oops something went wrong
-		u.ReportProgress(ctx, updater.ProgressError)
-		return
-	}
-
-	// We've just applied the update
-	u.ReportProgress(ctx, updater.ProgressInstallationFinished)
-
-	err := someFunctionThatExitsAndRerunsTheApp()
-	if err != nil {
-		// Oops something went wrong
-		u.ReportProgress(ctx, updater.ProgressError)
-		return
-	}
-
-	u.SetInstanceVersion(newVersion)
-
-	// We're running the new version! Hurray!
-	u.ReportProgress(ctx, updater.ProgressUpdateComplete)
-
 
 If instead of rerunning the application in the example above, we'd perform a
 restart, then upon running the logic again and detecting that we're running a
 new version, we could report that we did so:
-
     u.ReportProgress(ctx, updater.ProgressUpdateCompleteAndRestarted)
 
 
@@ -161,39 +173,71 @@ progress reports automatically: TryUpdate
 
 	// After initializing our Updater instance...
 
-	type updateHandler struct {}
+	import (
+		"context"
+		"fmt"
 
-	func (e updateHandler) FetchUpdate(ctx context.Context, info *UpdateInfo) error {
-		download, err := someFunctionThatDownloadsAFile(info.GetURL())
-		if err != nil {
-			// Oops something went wrong
-			return err
-		}
+		"github.com/kinvolk/nebraska/updater"
+	)
 
-		setDownloadFile(ctx)
+	func getInstanceID() string {
+		// Your own implementation here...
+		return os.Getenv("MACHINE_NAME")
+	}
 
+	func getAppVersion() string {
+		// Your own implementation here...
+		return os.Getenv("MACHINE_VERSION")
+	}
+
+	type exampleUpdateHandler struct {
+	}
+
+	func (e exampleUpdateHandler) FetchUpdate(ctx context.Context, info updater.UpdateInfo) error {
+		// download, err := someFunctionThatDownloadsAFile(ctx, info.GetURL())
+		// if err != nil {
+		// 	return err
+		// }
 		return nil
 	}
 
-	func (e updateHandler) ApplyUpdate(ctx context.Context, info *UpdateInfo) error {
-		err := someFunctionThatExtractsTheUpdateAndInstallIt(getDownloadFile(ctx))
+	func (e exampleUpdateHandler) ApplyUpdate(ctx context.Context, info updater.UpdateInfo) error {
+		// err := someFunctionThatExtractsTheUpdateAndInstallIt(ctx, getDownloadFile(ctx))
+		// if err != nil {
+		// 	// Oops something went wrong
+		// 	return err
+		// }
+
+		// err := someFunctionThatExitsAndRerunsTheApp(ctx)
+		// if err != nil {
+		// 	// Oops something went wrong
+		// 	return err
+		// }
+		return nil
+	}
+
+	func main() {
+
+		conf := updater.Config{
+			OmahaURL:        "http://test.omahaserver.com/v1/update/",
+			AppID:           "application_id",
+			Channel:         "stable",
+			InstanceID:      getInstanceID(),
+			InstanceVersion: getAppVersion(),
+		}
+
+		appUpdater, err := updater.New(conf)
 		if err != nil {
-			// Oops something went wrong
 			return err
 		}
 
-		err := someFunctionThatExitsAndRerunsTheApp()
-		if err != nil {
-			// Oops something went wrong
+		ctx := context.TODO()
+
+		if err := appUpdater.TryUpdate(ctx, exampleUpdateHandler{}); err != nil {
 			return err
 		}
 
 		return nil
-	}
-
-	err := u.TryUpdate(ctx, updateHandler{})
-	if err != nil {
-		// Oops something went wrong
 	}
 
 	// If the update succeeded, then u.GetInstanceVersion() should be set to the new version

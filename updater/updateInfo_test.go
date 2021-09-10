@@ -63,7 +63,6 @@ const (
 )
 
 func TestUpdateInfo(t *testing.T) {
-
 	type test struct {
 		name          string
 		response      *omaha.Response
@@ -76,30 +75,20 @@ func TestUpdateInfo(t *testing.T) {
 		version       string
 	}
 
-	// update exists response
-	var updateExistsOmahaResponse omaha.Response
-	err := xml.Unmarshal([]byte(updateExistsResponse), &updateExistsOmahaResponse)
-	require.NoError(t, err)
-
-	// no update response
-	var noUpdateOmahaResponse omaha.Response
-	err = xml.Unmarshal([]byte(noUpdateResponse), &noUpdateOmahaResponse)
-	require.NoError(t, err)
-
-	// error response
-	var errorOmahaResponse omaha.Response
-	err = xml.Unmarshal([]byte(errorResponse), &errorOmahaResponse)
-	require.NoError(t, err)
-
-	// non update check response
-	var nonUpdateCheckOmahaResponse omaha.Response
-	err = xml.Unmarshal([]byte(nonUpdateCheckResponse), &nonUpdateCheckOmahaResponse)
-	require.NoError(t, err)
-
-	tests := []test{
+	tests := []struct {
+		name          string
+		response      string
+		appID         string
+		isNil         bool
+		hasUpate      bool
+		updateStatus  string
+		packagesCount int
+		urlCount      int
+		version       string
+	}{
 		{
-			name:          "update exists",
-			response:      &updateExistsOmahaResponse,
+			name:          "update_exists",
+			response:      updateExistsResponse,
 			appID:         appID,
 			isNil:         false,
 			hasUpate:      true,
@@ -109,14 +98,14 @@ func TestUpdateInfo(t *testing.T) {
 			version:       "2191.5.0",
 		},
 		{
-			name:     "invalid app id",
-			response: &updateExistsOmahaResponse,
+			name:     "invalid_app_id",
+			response: updateExistsResponse,
 			appID:    errorAppID,
 			isNil:    true,
 		},
 		{
-			name:          "no update exists",
-			response:      &noUpdateOmahaResponse,
+			name:          "no_update_exists",
+			response:      noUpdateResponse,
 			appID:         appID,
 			isNil:         false,
 			hasUpate:      false,
@@ -125,8 +114,8 @@ func TestUpdateInfo(t *testing.T) {
 			urlCount:      0,
 		},
 		{
-			name:          "error response",
-			response:      &errorOmahaResponse,
+			name:          "error_response",
+			response:      errorResponse,
 			appID:         errorAppID,
 			isNil:         false,
 			hasUpate:      false,
@@ -135,14 +124,8 @@ func TestUpdateInfo(t *testing.T) {
 			urlCount:      0,
 		},
 		{
-			name:     "nil response",
-			response: nil,
-			appID:    appID,
-			isNil:    true,
-		},
-		{
-			name:          "non update check response",
-			response:      &nonUpdateCheckOmahaResponse,
+			name:          "non_update_check_response",
+			response:      nonUpdateCheckResponse,
 			appID:         appID,
 			isNil:         false,
 			hasUpate:      false,
@@ -156,29 +139,33 @@ func TestUpdateInfo(t *testing.T) {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			updateInfo := updater.NewUpdateInfo(tc.response, tc.appID)
+
+			var omahaResponse omaha.Response
+			err := xml.Unmarshal([]byte(tc.response), &omahaResponse)
+			require.NoError(t, err)
+
+			updateInfo := updater.NewUpdateInfo(omahaResponse, tc.appID)
 			if tc.isNil {
 				assert.Nil(t, updateInfo)
 			} else {
 				assert.NotNil(t, updateInfo)
-				assert.Equal(t, tc.hasUpate, updateInfo.HasUpdate)
-				assert.Equal(t, tc.updateStatus, updateInfo.GetUpdateStatus())
-				assert.Equal(t, tc.version, updateInfo.GetVersion())
-				assert.Equal(t, tc.urlCount, len(updateInfo.GetURLs()))
+				assert.Equal(t, tc.hasUpate, updateInfo.HasUpdate())
+				assert.Equal(t, tc.updateStatus, updateInfo.UpdateStatus())
+				assert.Equal(t, tc.version, updateInfo.Version())
+				assert.Equal(t, tc.urlCount, len(updateInfo.URLs()))
 				if tc.urlCount > 0 {
-					assert.NotEqual(t, "", updateInfo.GetURL())
+					assert.NotEqual(t, "", updateInfo.URL())
 				} else {
-					assert.Equal(t, "", updateInfo.GetURL())
+					assert.Equal(t, "", updateInfo.URL())
 				}
-				assert.Equal(t, tc.packagesCount, len(updateInfo.GetPackages()))
+				assert.Equal(t, tc.packagesCount, len(updateInfo.Packages()))
 				if tc.packagesCount > 0 {
-					assert.NotNil(t, updateInfo.GetPackage())
+					assert.NotNil(t, updateInfo.Package())
 				} else {
-					assert.Nil(t, updateInfo.GetPackage())
+					assert.Nil(t, updateInfo.Package())
 				}
-				assert.Equal(t, tc.response, updateInfo.GetOmahaResponse())
+				assert.Equal(t, omahaResponse, updateInfo.OmahaResponse())
 			}
 		})
 	}
-
 }

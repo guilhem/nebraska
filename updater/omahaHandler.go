@@ -2,37 +2,45 @@ package updater
 
 import (
 	"bytes"
+	"context"
 	"encoding/xml"
 	"fmt"
 	"io"
+	"net/http"
 
-	retryablehttp "github.com/hashicorp/go-retryablehttp"
 	"github.com/kinvolk/go-omaha/omaha"
 )
 
+// HttpDo interface wraps the Do function which takes
+// http.Request and returns http.Response
+// and error. HttpDo interface allows the user to
+// create their custom implementation to handle proxies or
+// retries etc.
+type HttpDo interface {
+	Do(*http.Request) (*http.Response, error)
+}
+
+// httpOmahaHandler implements the OmahaRequestHandler using the
+// HttpDo interface to handle the network calls.
 type httpOmahaReqHandler struct {
-	url        string
-	httpClient *retryablehttp.Client
+	httpClient HttpDo
 }
 
-// NewDefaultOmahaRequestHandler returns a OmahaRequestHandler which uses default retryable http client
-// to handle the omaha request.
-func NewDefaultOmahaRequestHandler(url string) OmahaRequestHandler {
-	return NewHttpOmahaRequestHandler(url, retryablehttp.NewClient())
-}
-
-// NewHttpOmahaRequestHandler returns a OmahaRequestHandler which uses the provided retryable http client
-// to handle the omaha request.
-func NewHttpOmahaRequestHandler(url string, client *retryablehttp.Client) OmahaRequestHandler {
-	return &httpOmahaReqHandler{
-		url:        url,
+// NewOmahaRequestHandler returns a OmahaRequestHandler which uses the HttpDo client
+// to handle the post request to the omaha server.
+func NewOmahaRequestHandler(client HttpDo) OmahaRequestHandler {
+	omahaRequestHandler := httpOmahaReqHandler{
 		httpClient: client,
 	}
+	if omahaRequestHandler.httpClient == nil {
+		omahaRequestHandler.httpClient = http.DefaultClient
+	}
+	return &omahaRequestHandler
 }
 
-// Handle uses the httpClient to process the omaha request and returns omaha response
-// and error.
-func (h *httpOmahaReqHandler) Handle(req *omaha.Request) (*omaha.Response, error) {
+// Handle uses the httpClient to send the omaha request to the url and
+// returns omaha response and error.
+func (h *httpOmahaReqHandler) Handle(ctx context.Context, url string, req *omaha.Request) (*omaha.Response, error) {
 	requestBuf := bytes.NewBuffer(nil)
 	encoder := xml.NewEncoder(requestBuf)
 	err := encoder.Encode(req)
@@ -40,7 +48,14 @@ func (h *httpOmahaReqHandler) Handle(req *omaha.Request) (*omaha.Response, error
 		return nil, fmt.Errorf("encoding request as XML: %w", err)
 	}
 
-	resp, err := h.httpClient.Post(h.url, "text/xml", requestBuf)
+	request, err := http.NewRequest("POST", url, requestBuf)
+	if err != nil {
+		return nil, fmt.Errorf("http new request: %w", err)
+	}
+	request.WithContext(ctx)
+	request.Header.Set("Content-Type", "text/xml")
+
+	resp, err := h.httpClient.Do(request)
 	if err != nil {
 		return nil, fmt.Errorf("http post request: %w", err)
 	}

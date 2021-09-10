@@ -5,10 +5,12 @@ import (
 	"context"
 	"encoding/xml"
 	"errors"
+	"fmt"
 	"log"
 	"os"
 	"testing"
 
+	"github.com/google/uuid"
 	omahaSpec "github.com/kinvolk/go-omaha/omaha"
 	"github.com/kinvolk/nebraska/backend/pkg/api"
 	"github.com/kinvolk/nebraska/backend/pkg/omaha"
@@ -32,7 +34,7 @@ func newTestHandler(api *api.API) *testOmahaHandler {
 	}
 }
 
-func (h *testOmahaHandler) Handle(req *omahaSpec.Request) (*omahaSpec.Response, error) {
+func (h *testOmahaHandler) Handle(ctx context.Context, url string, req *omahaSpec.Request) (*omahaSpec.Response, error) {
 	requestBuf := bytes.NewBuffer(nil)
 	encoder := xml.NewEncoder(requestBuf)
 	err := encoder.Encode(req)
@@ -107,8 +109,8 @@ func TestCheckForUpdates(t *testing.T) {
 
 	info, err := u.CheckForUpdates(context.TODO())
 	require.NoError(t, err)
-	assert.False(t, info.HasUpdate)
-	assert.Equal(t, "", info.GetVersion())
+	assert.False(t, info.HasUpdate())
+	assert.Equal(t, "", info.Version())
 
 	newPkg, err := apiInstance.AddPackage(&api.Package{Type: api.PkgTypeOther, URL: "http://sample.url/pkg", Version: "0.3.0", ApplicationID: appID, Arch: api.ArchAMD64, Filename: null.StringFrom("updatefile.txt")})
 	require.NoError(t, err)
@@ -118,18 +120,18 @@ func TestCheckForUpdates(t *testing.T) {
 
 	info, err = u.CheckForUpdates(context.TODO())
 	require.NoError(t, err)
-	assert.True(t, info.HasUpdate)
+	assert.True(t, info.HasUpdate())
 
-	version := info.GetVersion()
+	version := info.Version()
 	assert.Equal(t, "0.3.0", version)
 
-	urls := info.GetURLs()
+	urls := info.URLs()
 	require.NotNil(t, urls)
 	assert.Equal(t, 1, len(urls))
-	assert.Equal(t, urls[len(urls)-1], info.GetURL())
-	assert.Equal(t, "http://sample.url/pkg", info.GetURL())
+	assert.Equal(t, urls[len(urls)-1], info.URL())
+	assert.Equal(t, "http://sample.url/pkg", info.URL())
 
-	pkg := info.GetPackage()
+	pkg := info.Package()
 	require.NotNil(t, pkg)
 	assert.Equal(t, "updatefile.txt", pkg.Name)
 }
@@ -139,11 +141,11 @@ type updateTestHandler struct {
 	applyUpdateResult error
 }
 
-func (u updateTestHandler) FetchUpdate(ctx context.Context, info *updater.UpdateInfo) error {
+func (u updateTestHandler) FetchUpdate(ctx context.Context, info updater.UpdateInfo) error {
 	return u.fetchUpdateResult
 }
 
-func (u updateTestHandler) ApplyUpdate(ctx context.Context, info *updater.UpdateInfo) error {
+func (u updateTestHandler) ApplyUpdate(ctx context.Context, info updater.UpdateInfo) error {
 	return u.applyUpdateResult
 }
 
@@ -217,11 +219,11 @@ func TestTryUpdate(t *testing.T) {
 				InstanceID:      "instance001",
 				InstanceVersion: "0.2.0",
 				OmahaReqHandler: newTestHandler(api),
-				Debug:           true,
+				Debug:           false,
 			})
 			require.NoError(t, err)
 
-			assert.Equal(t, oldVersion, u.GetInstanceVersion())
+			assert.Equal(t, oldVersion, u.InstanceVersion())
 
 			err = u.TryUpdate(context.TODO(), &updateTestHandler{
 				fetchUpdateResult: tc.fetchUpdateResult,
@@ -229,11 +231,145 @@ func TestTryUpdate(t *testing.T) {
 			})
 			if tc.isErr {
 				assert.Error(t, err)
-				assert.Equal(t, oldVersion, u.GetInstanceVersion())
+				assert.Equal(t, oldVersion, u.InstanceVersion())
 			} else {
 				assert.NoError(t, err)
-				assert.Equal(t, pkgVersion, u.GetInstanceVersion())
+				assert.Equal(t, pkgVersion, u.InstanceVersion())
 			}
 		})
 	}
+}
+
+// ExampleUpdater shows how to use the updater package to
+// update an application manually.
+func ExampleUpdater() error {
+
+	conf := updater.Config{
+		OmahaURL:        "http://test.omahaserver.com/v1/update/",
+		AppID:           "application_id",
+		Channel:         "stable",
+		InstanceID:      uuid.NewString(),
+		InstanceVersion: "0.0.1",
+	}
+
+	appUpdater, err := updater.New(conf)
+	if err != nil {
+		return err
+	}
+
+	ctx := context.TODO()
+
+	updateInfo, err := appUpdater.CheckForUpdates(ctx)
+	if err != nil {
+		return fmt.Errorf("error checking updates for app: %s, err: %w", conf.AppID, err)
+	}
+
+	if !updateInfo.HasUpdate() {
+		return fmt.Errorf("No update exists for the application")
+	}
+
+	// So we got an update, let's report we'll start downloading it.
+	if err := appUpdater.ReportProgress(ctx, updater.ProgressDownloadStarted); err != nil {
+		if progressErr := appUpdater.ReportError(ctx, nil); progressErr != nil {
+			fmt.Println("reporting progress error:", progressErr)
+		}
+		return err
+	}
+
+	// This should be implemented by the user.
+	// download, err := someFunctionThatDownloadsAFile(ctx, info.GetURL())
+	// if err != nil {
+	// 	// Oops something went wrong
+	// 	if progressErr := appUpdater.ReportError(ctx, nil); progressErr != nil {
+	// 		fmt.Println("reporting error:", progressErr)
+	// 	}
+	// 	return err
+	// }
+
+	// The download was successful, let's inform that to the omaha server
+	if err := appUpdater.ReportProgress(ctx, updater.ProgressDownloadFinished); err != nil {
+		if progressErr := appUpdater.ReportError(ctx, nil); progressErr != nil {
+			fmt.Println("reporting progress error:", progressErr)
+		}
+		return err
+	}
+
+	// We got our update file, let's install it!
+	if err := appUpdater.ReportProgress(ctx, updater.ProgressInstallationStarted); err != nil {
+		if progressErr := appUpdater.ReportError(ctx, nil); progressErr != nil {
+			fmt.Println("reporting progress error:", progressErr)
+		}
+		return err
+	}
+
+	// This should be your own implementation
+	// err := someFunctionThatExtractsTheUpdateAndInstallIt(ctx, download)
+	// if err != nil {
+	// 	// Oops something went wrong
+	// 	if progressErr := appUpdater.ReportError(ctx, nil); progressErr != nil {
+	// 		fmt.Println("reporting error:", progressErr)
+	// 	}
+	// 	return err
+	// }
+
+	if err := appUpdater.CompleteUpdate(ctx, updateInfo); err != nil {
+		if progressErr := appUpdater.ReportError(ctx, nil); progressErr != nil {
+			fmt.Println("reporting progress error:", progressErr)
+		}
+		return err
+	}
+
+	return nil
+}
+
+type exampleUpdateHandler struct {
+}
+
+func (e exampleUpdateHandler) FetchUpdate(ctx context.Context, info updater.UpdateInfo) error {
+	// download, err := someFunctionThatDownloadsAFile(ctx, info.GetURL())
+	// if err != nil {
+	// 	return err
+	// }
+	return nil
+}
+
+func (e exampleUpdateHandler) ApplyUpdate(ctx context.Context, info updater.UpdateInfo) error {
+	// err := someFunctionThatExtractsTheUpdateAndInstallIt(ctx, getDownloadFile(ctx))
+	// if err != nil {
+	// 	// Oops something went wrong
+	// 	return err
+	// }
+
+	// err := someFunctionThatExitsAndRerunsTheApp(ctx)
+	// if err != nil {
+	// 	// Oops something went wrong
+	// 	return err
+	// }
+	return nil
+}
+
+// ExampleUpdaterWithUpdateHandler shows how to use the updater package to
+// update an application automatically using exampleUpdateHandler.
+func ExampleUpdaterWithUpdateHandler() error {
+
+	conf := updater.Config{
+		OmahaURL:        "http://test.omahaserver.com/v1/update/",
+		AppID:           "application_id",
+		Channel:         "stable",
+		InstanceID:      uuid.NewString(),
+		InstanceVersion: "0.0.1",
+	}
+
+	appUpdater, err := updater.New(conf)
+	if err != nil {
+		return err
+	}
+
+	ctx := context.TODO()
+
+	if err := appUpdater.TryUpdate(ctx, exampleUpdateHandler{}); err != nil {
+		return err
+	}
+
+	return nil
 }

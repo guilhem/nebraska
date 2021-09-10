@@ -1,11 +1,11 @@
 package updater_test
 
 import (
+	"context"
 	"encoding/xml"
 	"fmt"
 	"testing"
 
-	"github.com/hashicorp/go-retryablehttp"
 	"github.com/kinvolk/go-omaha/omaha"
 	"github.com/kinvolk/nebraska/updater"
 	"github.com/stretchr/testify/assert"
@@ -26,7 +26,6 @@ const (
 )
 
 func TestHttpOmahaHandler(t *testing.T) {
-
 	serverURL := "127.0.0.1:0"
 	s, err := omaha.NewTrivialServer(serverURL)
 
@@ -42,38 +41,29 @@ func TestHttpOmahaHandler(t *testing.T) {
 
 	err = xml.Unmarshal([]byte(sampleRequest), &omahaRequest)
 
-	validHandler := updater.NewDefaultOmahaRequestHandler(fmt.Sprintf("http://%s/v1/update", s.Addr().String()))
-
-	// Default retryablehttp Client has retry max count of 4 which makes
-	// the test case too long to complete, so we use a custom Client
-	// with retry max count of 0.
-	client := retryablehttp.NewClient()
-	client.RetryMax = 0
-	invalidHandler := updater.NewHttpOmahaRequestHandler("http:/127.0.0.67/v1/update", client)
-
 	type test struct {
 		name    string
-		handler updater.OmahaRequestHandler
+		url     string
 		request *omaha.Request
 		isErr   bool
 	}
 
 	tests := []test{
 		{
-			name:    "valid request",
-			handler: validHandler,
+			name:    "valid_request",
+			url:     fmt.Sprintf("http://%s/v1/update", s.Addr().String()),
 			request: &omahaRequest,
 			isErr:   false,
 		},
 		{
-			name:    "invalid request",
-			handler: validHandler,
+			name:    "invalid_request",
+			url:     fmt.Sprintf("http://%s/v1/update", s.Addr().String()),
 			request: nil,
 			isErr:   true,
 		},
 		{
-			name:    "invalid server url",
-			handler: invalidHandler,
+			name:    "invalid_server_url",
+			url:     "http:/127.0.0.67/v1/update",
 			request: &omahaRequest,
 			isErr:   true,
 		},
@@ -83,7 +73,8 @@ func TestHttpOmahaHandler(t *testing.T) {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			resp, err := tc.handler.Handle(tc.request)
+			handler := updater.NewOmahaRequestHandler(nil)
+			resp, err := handler.Handle(context.TODO(), tc.url, tc.request)
 			if tc.isErr {
 				assert.Error(t, err)
 				assert.Nil(t, resp)
